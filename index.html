@@ -230,7 +230,114 @@ details>.in{display:grid;gap:8px}
 .spin{width:38px;height:38px;border-radius:50%;border:5px solid var(--line);border-top-color:#f08a24;animation:sp 0.9s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spin{animation-duration:3s}}
-</style></head><body>
+</style>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script>
+// ===== Firebase 연결 (공개 사이트용) — 게임 코드가 쓰는 claude.use('user'|'db'|'room') 모양을 그대로 흉내 =====
+(function(){
+ if(!window.firebase||!firebase.initializeApp) return;   // SDK를 못 불러오면 오프라인으로 동작
+ const CFG={
+  apiKey:"AIzaSyD0R4c9mcADRTCM139xSnr_4s5Mtm5XfGk",
+  authDomain:"ballfight-387d0.firebaseapp.com",
+  databaseURL:"https://ballfight-387d0-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId:"ballfight-387d0",
+  storageBucket:"ballfight-387d0.firebasestorage.app",
+  messagingSenderId:"88847585909",
+  appId:"1:88847585909:web:44e2cdfbc4f238be671e3c"
+ };
+ let app,DB;
+ try{ app=firebase.initializeApp(CFG); DB=firebase.database(); }catch(e){ return; }
+ // 데이터베이스 키에 못 쓰는 글자(. # $ / [ ])는 %xx로 바꿔 저장
+ const ek=k=>String(k).replace(/[%.#$\/\[\]]/g,c=>'%'+c.charCodeAt(0).toString(16).padStart(2,'0'));
+ const dk=k=>String(k).replace(/%([0-9a-f]{2})/g,(_,h)=>String.fromCharCode(parseInt(h,16)));
+ const enc=v=>{ if(Array.isArray(v)) return v.map(x=>x===undefined?null:enc(x)); if(v&&typeof v==='object'){ const o={}; for(const k in v){ if(v[k]!==undefined) o[ek(k)]=enc(v[k]); } return o; } return v; };
+ const dec=v=>{ if(Array.isArray(v)) return v.map(dec); if(v&&typeof v==='object'){ const ks=Object.keys(v); if(ks.length&&ks.every((k,i)=>k===String(i))) return ks.map(k=>dec(v[k])); const o={}; for(const k in v) o[dk(k)]=dec(v[k]); return o; } return v; };
+ const clean=v=>enc(JSON.parse(JSON.stringify(v===undefined?null:v)));
+ // 빈 객체·배열은 저장되지 않으므로 선수 기록은 읽을 때 기본값을 채움
+ const fixPlayer=d=>{ if(!d||typeof d!=='object') return d; for(const k of ['byMode','myChar','charStats']) if(!d[k]||typeof d[k]!=='object') d[k]={};
+  if(!Array.isArray(d.recent)) d.recent=d.recent&&typeof d.recent==='object'?Object.values(d.recent):[];
+  for(const k of ['games','wins','losses','draws','tourWins']) if(typeof d[k]!=='number') d[k]=0; return d; };
+ const shape=(col,v)=>col==='players'?fixPlayer(v):v;
+ let authP=null;
+ const auth=()=>authP||(authP=new Promise((res,rej)=>{
+  const off=firebase.auth().onAuthStateChanged(u=>{ if(u){ off(); res(u); } });
+  firebase.auth().signInAnonymously().catch(e=>{ off(); authP=null; rej(e); });
+ }));
+ // ---------- user ----------
+ const USER={fb:true, id:async()=>(await auth()).uid, profiles:async()=>({})};
+ // ---------- db ----------
+ const snapDocs=(col,s)=>{ const docs=[]; s.forEach(c=>{ const v=dec(c.val()); docs.push({id:dk(c.key), data:()=>shape(col,JSON.parse(JSON.stringify(v)))}); }); return docs; };
+ const DBA={
+  doc(path){ const [col,id]=path.split('/'); const r=DB.ref(col+'/'+ek(id));
+   return { get:async()=>{ const s=await r.get(); const v=s.exists()?dec(s.val()):null; return {exists:s.exists(), id, data:()=>shape(col,v)}; },
+            set:async v=>{ try{ await r.set(clean(v)); }catch(e){ const er=new Error(e&&e.message||'denied'); er.code=/permission/i.test(e&&e.message||'')?'permission_denied':'error'; throw er; } } }; },
+  collection(col){
+   const make=st=>({
+    orderBy:(f,dir)=>make(Object.assign({},st,{f,dir})),
+    limit:n=>make(Object.assign({},st,{n})),
+    onSnapshot(cb,err){ let ref=DB.ref(col); if(st.f) ref=ref.orderByChild(st.f); if(st.n) ref=ref.limitToLast(st.n);
+     const h=s=>{ const docs=snapDocs(col,s); if(st.dir==='desc') docs.reverse(); cb({docs}); };
+     let live=true; auth().then(()=>{ if(live) ref.on('value',h,e=>{ if(err) err(e); }); },e=>{ if(err) err(e); });
+     return ()=>{ live=false; ref.off('value',h); }; }
+   });
+   return make({});
+  }
+ };
+ // ---------- room (실시간 방: 접속자 + 메시지) ----------
+ const conn={on:false,cbs:new Set()};
+ DB.ref('.info/connected').on('value',s=>{ conn.on=!!s.val(); conn.cbs.forEach(f=>{try{f(conn.on)}catch(e){}}); });
+ function Room(name){
+  const base=DB.ref('rooms/'+ek(name)), me=base.child('peers').push().key;
+  const peers=new Map(), pcbs=new Set(), hand={}, offs=[];
+  let mine={}, uid=null, alive=true;
+  const emitPeers=()=>pcbs.forEach(f=>{try{f()}catch(e){}});
+  const pref=base.child('peers'), mref=base.child('msgs');
+  const onAdd=s=>{ peers.set(s.key,dec(s.val())||{}); emitPeers(); };
+  const onRem=s=>{ peers.delete(s.key); emitPeers(); };
+  const startKey=mref.push().key;
+  const mq=mref.orderByKey().startAt(startKey);
+  const onMsg=s=>{ const v=s.val(); if(!v||typeof v.topic!=='string') return;
+   const m={topic:v.topic, data:dec(v.data===undefined?null:v.data), peer:v.from, sameTab:v.from===me, isMe:v.u===uid, ts:v.ts};
+   (hand[v.topic]||[]).forEach(f=>{try{f(m)}catch(e){console.error(e)}}); };
+  const listen=()=>{ if(!alive) return;
+   pref.on('child_added',onAdd); pref.on('child_changed',onAdd); pref.on('child_removed',onRem); mq.on('child_added',onMsg);
+   offs.push(()=>{ pref.off('child_added',onAdd); pref.off('child_changed',onAdd); pref.off('child_removed',onRem); mq.off('child_added',onMsg); }); };
+  // 내 접속 정보 등록 (끊기면 자동 삭제) + 다시 연결되면 재등록
+  const write=()=>{ if(!alive) return; const r=pref.child(me); r.onDisconnect().remove(); return r.set({u:uid,t:Date.now(),p:clean(mine)}); };
+  const ready=auth().then(u=>{ uid=u.uid; listen(); return write(); });
+  const rc=on=>{ if(on&&alive&&uid) write(); }; conn.cbs.add(rc); offs.push(()=>conn.cbs.delete(rc));
+  // 오래된 메시지 청소 (10분 지난 것)
+  ready.then(()=>mref.orderByChild('ts').endAt(Date.now()-600000).limitToFirst(200).get()).then(s=>{ if(s) s.forEach(c=>{ c.ref.remove().catch(()=>{}); }); }).catch(()=>{});
+  const api={
+   peers(){ return [...peers.entries()].map(([k,v])=>({peer:k, kind:'viewer', presence:(v&&v.p)||{}, isMe:k===me, sameTab:k===me, uid:v&&v.u})); },
+   async presence(part){ await ready; for(const k in part){ if(part[k]===null||part[k]===undefined) delete mine[k]; else mine[k]=JSON.parse(JSON.stringify(part[k])); }
+    peers.set(me,{u:uid,t:Date.now(),p:JSON.parse(JSON.stringify(mine))}); emitPeers();
+    const up={}; for(const k in part) up['p/'+ek(k)]=part[k]===undefined?null:clean(part[k]);
+    return pref.child(me).update(up); },
+   async emit(topic,data){ await ready; const r=mref.push(); await r.set({topic, data:clean(data), from:me, u:uid, ts:firebase.database.ServerValue.TIMESTAMP});
+    setTimeout(()=>r.remove().catch(()=>{}),8000); },
+   on(topic,cb){ (hand[topic]=hand[topic]||[]).push(cb); return ()=>{ hand[topic]=(hand[topic]||[]).filter(f=>f!==cb); }; },
+   onPeers(cb){ pcbs.add(cb); return ()=>pcbs.delete(cb); },
+   onConnection(cb){ conn.cbs.add(cb); return ()=>conn.cbs.delete(cb); },
+   connected(){ return conn.on&&!!uid; },
+   async join(n){ const r=Room(n); await r._ready; return r; },
+   async leave(){ alive=false; offs.forEach(f=>f()); try{ await pref.child(me).onDisconnect().cancel(); await pref.child(me).remove(); }catch(e){} },
+   _ready:ready
+  };
+  return api;
+ }
+ let LOBBY=null;
+ window.claude={ use:async kind=>{
+  if(kind==='user'){ await auth(); return USER; }
+  if(kind==='db'){ await auth(); return DBA; }
+  if(kind==='room'){ if(!LOBBY){ LOBBY=Room('lobby'); LOBBY._ready.catch(()=>{}); } return LOBBY; }
+  return null;
+ }};
+})();
+</script>
+</head><body>
 <div class="wrap">
  <header class="topbar"><button type="button" class="pchip" id="pchip" aria-haspopup="dialog"><span class="pavw" id="pavw"></span><span class="pnm"><b id="pname">로그인 / 회원가입</b><small id="plv">눌러서 프로필 만들기</small></span></button><span class="net" id="net">⚪ 확인 중</span></header>
  <div class="video">
@@ -1987,7 +2094,7 @@ function ttlEl(t){const e=document.createElement('span');e.className='ttl';e.tex
 function drawChip(){
  const n=$('net');
  n.textContent=NET.mode==='online'?'온라인':NET.mode==='checking'?'확인 중':NET.mode==='readonly'?'읽기 전용':'오프라인';n.dataset.s=NET.mode;
- n.title=NET.mode==='online'?'기록이 온라인에 저장돼요':NET.mode==='readonly'?'이 링크로는 기록을 저장할 권한이 없어요':'기록이 이 기기에만 저장돼요';
+ n.title=NET.mode==='online'?'기록이 온라인에 저장돼요':NET.mode==='readonly'?'온라인 저장 권한이 없어요':'기록이 이 기기에만 저장돼요';
  if(!PROF){ putAv($('pavw'),null,'pav'); $('pname').textContent='로그인 / 회원가입'; $('plv').textContent='눌러서 프로필 만들기'; return; }
  const L=lvOfP(PROF); putAv($('pavw'),PROF,'pav');
  $('pname').textContent=PROF.nick; if(myTitle()) $('pname').prepend(ttlEl(myTitle())); $('plv').textContent='Lv.'+L.lv+' · '+PROF.wins+'승 '+PROF.losses+'패';
@@ -1997,12 +2104,12 @@ function closeProf(){ $('pm').classList.remove('on'); if(boardUnsub&&!$('drw').c
 function signupHTML(p){
  const col=p?p.col:COL[0];
  return `<h2>${p?'프로필 수정':'회원가입'}</h2>
- <div class="sub">${p?'사진, 닉네임, 한마디를 바꿀 수 있어요.':(NET.mode==='online'?'claude.ai 계정으로 로그인돼서 비밀번호는 필요 없어요.':'지금은 오프라인이라 이 기기에만 저장돼요.')}</div>
+ <div class="sub">${p?'사진, 닉네임, 한마디를 바꿀 수 있어요.':(NET.mode==='online'?'이 기기에서 자동으로 로그인돼요. 비밀번호는 필요 없어요. (브라우저 기록을 지우면 계정이 사라질 수 있어요)':'지금은 오프라인이라 이 기기에만 저장돼요.')}</div>
  <div class="phrow" id="sgd"><span id="sgp"></span><div class="phbtns">
   <button type="button" class="btn2" id="sgd2">직접 그리기</button>
   <label class="btn2 upl">사진 올리기<input type="file" id="sgf" accept="image/*"></label>
   <button type="button" class="btn2" id="sgr">사진 빼기</button></div></div>
- ${USERNS?`<label class="chk acct"><input type="checkbox" id="sga"${p&&p.useAcct?' checked':''}> 사진이 없으면 claude.ai 계정 사진 쓰기</label>`:''}
+ ${USERNS&&!USERNS.fb?`<label class="chk acct"><input type="checkbox" id="sga"${p&&p.useAcct?' checked':''}> 사진이 없으면 claude.ai 계정 사진 쓰기</label>`:''}
  <div class="hint">사진 올리기가 안 되면 직접 그리기나 계정 사진을 쓰세요. 컴퓨터에서는 사진을 끌어다 놓거나 붙여넣어도 돼요.</div>
  <div class="pad" id="pad" hidden>
   <canvas id="padc" width="384" height="384" aria-label="그림판"></canvas>
@@ -2096,8 +2203,8 @@ function wireSignup(){
   let h=''; try{ const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(code)); h=[...new Uint8Array(buf)].map(x=>x.toString(16).padStart(2,'0')).join(''); }catch(e){}
   if(h!==TCODE){ m.textContent='코드가 맞지 않아요.'; return; }
   if(NET.mode==='online'){
-   try{ await NET.db.doc('titles/'+NET.uid).set({t:'제작자'}); m.textContent='칭호가 적용됐어요: 제작자'; }
-   catch(e){ m.textContent='이 칭호는 페이지 주인만 받을 수 있어요.'; return; }
+   try{ await NET.db.doc('tclaim/'+NET.uid).set(code); await NET.db.doc('titles/'+NET.uid).set({t:'제작자'}); m.textContent='칭호가 적용됐어요: 제작자'; }
+   catch(e){ m.textContent='칭호를 저장하지 못했어요. 잠시 뒤 다시 해 보세요.'; return; }
   } else { PROF.title='제작자'; saveProf(); m.textContent='칭호가 적용됐어요 (이 기기에서만): 제작자'; }
   $('sgt').value=''; drawChip();
  };
