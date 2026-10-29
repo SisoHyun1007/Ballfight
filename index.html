@@ -184,6 +184,7 @@ details>.in{display:grid;gap:8px}
 .tb th,.tb td{border-bottom:1px solid var(--line);padding:5px 4px;text-align:center}
 .tb th{color:var(--mut);font-weight:400}.tb td:first-child,.tb th:first-child{text-align:left}
 .tb tr.me td{background:#fff2c2;color:#111}
+.tb.rk tr[data-i]{cursor:pointer}.tb.rk tr[data-i]:active td{background:#e9f2ff}
 .nmc{display:flex;align-items:center;gap:6px;text-align:left!important}
 .mav{flex:none;width:26px;height:26px;border-radius:50%;border:1.5px solid #000;display:inline-flex;align-items:center;justify-content:center;font-size:14px}
 .wbar{height:10px;border:1.5px solid #000;border-radius:5px;background:var(--field);overflow:hidden;min-width:60px}.wbar i{display:block;height:100%;background:#2fc24b}
@@ -4327,7 +4328,7 @@ function shrinkPhoto(file,cb){
 const MODEN={duel:'1:1',ffa:'난투',team:'팀전',tour:'토너먼트',boss:'보스전',online:'온라인 1:1',party:'파티',bot:'봇 대전'};
 const TCODE='8a45dc3035b10a5440ff1d5c1bd84f7e160a6991b00d89f89a5ab87d06e78c3b';   // 칭호 코드의 해시 (코드 자체는 페이지에 없음)
 let TITLES={},titleUnsub=null,USERNS=null;
-let NET={db:null,uid:null,mode:'checking'},PROF=null,BOARD=[],boardUnsub=null,pTab='me',saving=Promise.resolve();
+let NET={db:null,uid:null,mode:'checking'},PROF=null,BOARD=[],boardUnsub=null,pTab='me',VIEWP=null,saving=Promise.resolve();
 const LKEY='bf_profile_v1';
 const lvOfP=p=>{const xp=(p.games||0)*10+(p.wins||0)*15+(p.tourWins||0)*50,lv=1+Math.floor(Math.sqrt(xp/30)),a=30*(lv-1)**2,c=30*lv**2;return {lv,xp,pct:Math.round((xp-a)/(c-a)*100)}};
 const rate=(w,g)=>g?Math.round(w/g*100)+'%':'-';
@@ -4385,43 +4386,47 @@ function signupHTML(p){
  <div class="er" id="sge"></div>
  <div class="bar"><button type="button" class="btn2" id="sgx">닫기</button><button type="button" class="go" id="sgo">${p?'저장':'가입하기'}</button></div>`;
 }
-function statRows(p){
+function statRows(p,other){
+ p=Object.assign({games:0,wins:0,losses:0,tourWins:0},p); p.byMode=p.byMode||{}; p.myChar=p.myChar||{}; p.recent=Array.isArray(p.recent)?p.recent:[];
  const L=lvOfP(p);
  const modes=Object.keys(MODEN).map(m=>{const s=p.byMode[m]||{g:0,w:0};return `<tr><td>${MODEN[m]}</td><td>${s.g}</td><td>${s.w}</td><td>${rate(s.w,s.g)}</td></tr>`}).join('');
  const chars=Object.entries(p.myChar).sort((a,b)=>b[1].g-a[1].g).map(([n,s])=>`<tr><td>${esc(n)}</td><td>${s.g}</td><td>${s.w}</td><td>${rate(s.w,s.g)}</td></tr>`).join('')||'<tr><td colspan="4">아직 기록이 없어요</td></tr>';
  const rec=(p.recent||[]).map(r=>`<li><span class="${r.win?'win':r.draw?'drw':'los'}">${r.win?'승':r.draw?'무':'패'}</span> ${MODEN[r.mode]||''} · ${esc(r.mine)} vs ${esc(r.vs)}</li>`).join('')||'<li>아직 경기가 없어요</li>';
- return `<div class="pcard"><span class="avslot" data-me="1"></span><div><div class="pn"></div><div class="pb"></div>
+ return `<div class="pcard"><span class="avslot" ${other?'data-v="1"':'data-me="1"'}></span><div><div class="pn"></div><div class="pb"></div>
    <div class="lvbar"><i style="width:${L.pct}%"></i><b>Lv.${L.lv}</b></div></div></div>
   <div class="kpis"><div><b>${p.games}</b><span>경기</span></div><div><b>${p.wins}</b><span>승리</span></div><div><b>${p.losses}</b><span>패배</span></div><div><b>${rate(p.wins,p.games)}</b><span>승률</span></div><div><b>${p.tourWins}</b><span>우승</span></div></div>
   <h3>모드별</h3><table class="tb"><tr><th>모드</th><th>경기</th><th>승</th><th>승률</th></tr>${modes}</table>
-  <h3>내가 쓴 캐릭터 (1P / 내 팀)</h3><table class="tb"><tr><th>캐릭터</th><th>경기</th><th>승</th><th>승률</th></tr>${chars}</table>
+  <h3>${other?'사용한 캐릭터':'내가 쓴 캐릭터 (1P / 내 팀)'}</h3><table class="tb"><tr><th>캐릭터</th><th>경기</th><th>승</th><th>승률</th></tr>${chars}</table>
   <h3>최근 경기</h3><ul class="rec">${rec}</ul>`;
 }
 function boardHTML(){
  if(NET.mode==='offline'||NET.mode==='checking') return '<div class="sub">랭킹은 온라인일 때만 볼 수 있어요.</div>';
  if(!BOARD.length) return '<div class="sub">아직 랭킹에 오른 사람이 없어요. 첫 승리를 노려 보세요!</div>';
  const adm=NET.mode==='online'&&TITLES[NET.uid]==='제작자';
- const rows=BOARD.slice(0,30).map((d,i)=>`<tr${d.id===NET.uid?' class="me"':''}><td><span class="rkn r${i+1}">${i+1}</span></td><td class="nmc"><span class="avslot" data-i="${i}"></span><span class="bn" data-i="${i}"></span>${adm&&d.id!==NET.uid?`<button type="button" class="rdel" data-i="${i}" aria-label="계정 삭제">🗑</button>`:''}</td><td>Lv.${lvOfP(d).lv}</td><td>${d.wins||0}</td><td>${rate(d.wins||0,d.games||0)}</td></tr>`).join('');
+ const rows=BOARD.slice(0,30).map((d,i)=>`<tr data-i="${i}"${d.id===NET.uid?' class="me"':''}><td><span class="rkn r${i+1}">${i+1}</span></td><td class="nmc"><span class="avslot" data-i="${i}"></span><span class="bn" data-i="${i}"></span>${adm&&d.id!==NET.uid?`<button type="button" class="rdel" data-i="${i}" aria-label="계정 삭제">🗑</button>`:''}</td><td>Lv.${lvOfP(d).lv}</td><td>${d.wins||0}</td><td>${rate(d.wins||0,d.games||0)}</td></tr>`).join('');
  const agg={},OLDN={'양동우':'테스트1','김유성':'테스트2'};BOARD.forEach(d=>Object.entries(d.charStats||{}).forEach(([n,s])=>{n=OLDN[n]||n;const a=agg[n]||(agg[n]={g:0,w:0});a.g+=s.g||0;a.w+=s.w||0}));
  const cr=Object.entries(agg).sort((a,b)=>(b[1].w/b[1].g||0)-(a[1].w/a[1].g||0)).map(([n,s])=>`<tr><td>${esc(n)}</td><td>${s.g}</td><td>${rate(s.w,s.g)}</td><td><div class="wbar"><i style="width:${s.g?Math.round(s.w/s.g*100):0}%"></i></div></td></tr>`).join('')||'<tr><td colspan="4">아직 기록이 없어요</td></tr>';
- return `<h3>랭킹 <small>승리 순</small></h3><table class="tb rk"><tr><th>#</th><th>플레이어</th><th>레벨</th><th>승</th><th>승률</th></tr>${rows}</table>
+ return `<h3>랭킹 <small>승리 순 · 이름을 누르면 프로필</small></h3><table class="tb rk"><tr><th>#</th><th>플레이어</th><th>레벨</th><th>승</th><th>승률</th></tr>${rows}</table>
   <h3>캐릭터 승률 <small>모든 플레이어 합계</small></h3><table class="tb"><tr><th>캐릭터</th><th>출전</th><th>승률</th><th></th></tr>${cr}</table>`;
 }
 function fillNames(root){ root.querySelectorAll('.bn').forEach(el=>{ const d=BOARD[+el.dataset.i]; el.textContent=(d&&d.nick)||'이름 없음'; const t=d&&TITLES[d.id]; if(t) el.prepend(ttlEl(t)); });
- root.querySelectorAll('.avslot').forEach(el=>{ const p=el.dataset.me?PROF:BOARD[+el.dataset.i]; putAv(el,p,el.dataset.me?'pav big':'pav sm'); }); const pn=root.querySelector('.pn'),pb=root.querySelector('.pb'); if(pn&&PROF){ pn.textContent=PROF.nick; if(myTitle()) pn.prepend(ttlEl(myTitle())); pb.textContent=PROF.bio||''; } }
+ root.querySelectorAll('.avslot').forEach(el=>{ const p=el.dataset.me?PROF:el.dataset.v?VIEWP:BOARD[+el.dataset.i]; putAv(el,p,(el.dataset.me||el.dataset.v)?'pav big':'pav sm'); }); const pn=root.querySelector('.pn'),pb=root.querySelector('.pb');
+ if(pn&&pTab==='view'&&VIEWP){ pn.textContent=VIEWP.nick||'이름 없음'; const t=TITLES[VIEWP.id]; if(t) pn.prepend(ttlEl(t)); pb.textContent=VIEWP.bio||''; }
+ else if(pn&&PROF){ pn.textContent=PROF.nick; if(myTitle()) pn.prepend(ttlEl(myTitle())); pb.textContent=PROF.bio||''; } }
 function subBoard(){
  if(boardUnsub||NET.mode==='offline'||!NET.db) return;
  boardUnsub=NET.db.collection('players').orderBy('wins','desc').limit(200).onSnapshot(s=>{
   BOARD=s.docs.map(d=>Object.assign({id:d.id},d.data()));
-  if($('pm').classList.contains('on')&&pTab==='rank') renderProf();
+  if($('pm').classList.contains('on')&&pTab==='view'&&VIEWP){ const nd=BOARD.find(d=>d.id===VIEWP.id); if(nd) VIEWP=nd; }
+  if($('pm').classList.contains('on')&&(pTab==='rank'||pTab==='view')) renderProf();
   if($('drw').classList.contains('on')) drawStatsTab();
  },()=>{ boardUnsub=null; });
 }
 function renderProf(){
  const sh=$('psheet');
- if(!PROF||pTab==='edit'){ sh.innerHTML=signupHTML(pTab==='edit'?PROF:null); wireSignup(); return; }
- sh.innerHTML=`<div class="ptabs"><button type="button" class="tab${pTab==='me'?' on':''}" data-p="me">내 프로필</button><button type="button" class="tab${pTab==='rank'?' on':''}" data-p="rank">랭킹</button><button type="button" class="btn2" id="pclose" aria-label="닫기">✕</button></div>
-  <div id="pbody">${pTab==='me'?statRows(PROF)+'<div class="bar"><button type="button" class="btn2" id="pedit">프로필 수정</button></div>':boardHTML()}</div>
+ if((!PROF&&!(pTab==='view'&&VIEWP))||pTab==='edit'){ sh.innerHTML=signupHTML(pTab==='edit'?PROF:null); wireSignup(); return; }
+ sh.innerHTML=`<div class="ptabs"><button type="button" class="tab${pTab==='me'?' on':''}" data-p="me">내 프로필</button><button type="button" class="tab${pTab==='rank'||pTab==='view'?' on':''}" data-p="rank">랭킹</button><button type="button" class="btn2" id="pclose" aria-label="닫기">✕</button></div>
+  <div id="pbody">${pTab==='me'?statRows(PROF)+'<div class="bar"><button type="button" class="btn2" id="pedit">프로필 수정</button></div>':pTab==='view'&&VIEWP?'<div class="bar" style="justify-content:flex-start"><button type="button" class="btn2" id="pback">← 랭킹으로</button></div>'+statRows(VIEWP,true):boardHTML()}</div>
   <div class="sub">${NET.mode==='online'?'기록이 온라인에 저장되고 있어요.':NET.mode==='readonly'?'이 링크로는 온라인 저장 권한이 없어서 이 기기에만 저장돼요.':'오프라인이라 기록이 이 기기에만 저장돼요.'}</div>`;
  fillNames(sh);
  sh.querySelectorAll('.rdel').forEach(bt=>bt.onclick=async e=>{ e.stopPropagation(); const d=BOARD[+bt.dataset.i]; if(!d) return;
@@ -4430,7 +4435,10 @@ function renderProf(){
   catch(er){ bt.disabled=false; alert('삭제하지 못했어요. Firebase 규칙을 새로 게시했는지 확인해 주세요.'); } });
  sh.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>{pTab=b.dataset.p;if(pTab==='rank')subBoard();renderProf()});
  $('pclose').onclick=closeProf; const pe=$('pedit'); if(pe) pe.onclick=()=>{pTab='edit';renderProf()};
- if(pTab==='rank') subBoard();
+ const pbk=$('pback'); if(pbk) pbk.onclick=()=>{ pTab='rank'; VIEWP=null; renderProf(); };
+ sh.querySelectorAll('.tb.rk tr[data-i]').forEach(tr=>tr.onclick=e=>{ if(e.target.closest('.rdel')) return; const d=BOARD[+tr.dataset.i]; if(!d) return;
+  if(d.id===NET.uid){ pTab='me'; renderProf(); return; } VIEWP=d; pTab='view'; renderProf(); sh.scrollTop=0; });
+ if(pTab==='rank'||pTab==='view') subBoard();
 }
 function wireSignup(){
  let photo=PROF&&okPhoto(PROF.photo)?PROF.photo:null, col=PROF?PROF.col:COL[0], acct=!!(PROF&&PROF.useAcct);
@@ -4506,6 +4514,8 @@ function drawStatsTab(){
  const el=$('dstat'); if(!el) return;
  el.innerHTML=(PROF?`<div class="pcard sm"><span class="avslot" data-me="1"></span><div><div class="pn"></div><div class="pb"></div></div><button type="button" class="btn2" id="dsp">내 통계 보기</button></div>`:`<button type="button" class="go" id="dsp">회원가입하고 기록 남기기</button>`)+boardHTML();
  fillNames(el); $('dsp').onclick=()=>{closeDrawer();openProf('me')};
+ el.querySelectorAll('.tb.rk tr[data-i]').forEach(tr=>tr.onclick=e=>{ if(e.target.closest('.rdel')) return; const d=BOARD[+tr.dataset.i]; if(!d) return;
+  closeDrawer(); if(d.id===NET.uid&&PROF){ openProf('me'); return; } VIEWP=d; openProf('view'); });
 }
 $('pchip').onclick=()=>openProf(PROF?'me':null);
 $('pm').addEventListener('click',e=>{if(e.target.id==='pm')closeProf()});
