@@ -232,6 +232,7 @@ details>.in{display:grid;gap:8px}
 @media (prefers-reduced-motion:reduce){.spin{animation-duration:3s}}
 .nogui .topbar,.nogui .ctl,.nogui #stinfo,.nogui .edge,.nogui .brk{display:none!important}
 .nogui .wrap{min-height:100vh;min-height:100dvh;display:flex;flex-direction:column;justify-content:center}
+.rdel{margin-left:6px;border:2px solid #000;border-radius:8px;background:#ffe3e3;font-size:14px;padding:1px 6px;cursor:pointer;vertical-align:middle}
 .chromebtn{width:100%;margin-top:8px;font-size:14px}
 .recrow{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}.recbtn{width:100%}
 .recm{position:fixed;inset:0;background:#141414;z-index:300;display:none;align-items:center;justify-content:center}
@@ -308,6 +309,7 @@ a.rdl{background:#2fbf4a;color:#fff}
  const DBA={
   doc(path){ const [col,id]=path.split('/'); const r=DB.ref(col+'/'+ek(id));
    return { get:async()=>{ const s=await r.get(); const v=s.exists()?dec(s.val()):null; return {exists:s.exists(), id, data:()=>shape(col,v)}; },
+            del:async()=>{ await r.remove(); },
             set:async v=>{ try{ await r.set(clean(v)); }catch(e){ const er=new Error(e&&e.message||'denied'); er.code=/permission/i.test(e&&e.message||'')?'permission_denied':'error'; throw er; } } }; },
   collection(col){
    const make=st=>({
@@ -3083,8 +3085,9 @@ function statRows(p){
 function boardHTML(){
  if(NET.mode==='offline'||NET.mode==='checking') return '<div class="sub">랭킹은 온라인일 때만 볼 수 있어요.</div>';
  if(!BOARD.length) return '<div class="sub">아직 랭킹에 오른 사람이 없어요. 첫 승리를 노려 보세요!</div>';
- const rows=BOARD.slice(0,30).map((d,i)=>`<tr${d.id===NET.uid?' class="me"':''}><td><span class="rkn r${i+1}">${i+1}</span></td><td class="nmc"><span class="avslot" data-i="${i}"></span><span class="bn" data-i="${i}"></span></td><td>Lv.${lvOfP(d).lv}</td><td>${d.wins||0}</td><td>${rate(d.wins||0,d.games||0)}</td></tr>`).join('');
- const agg={};BOARD.forEach(d=>Object.entries(d.charStats||{}).forEach(([n,s])=>{const a=agg[n]||(agg[n]={g:0,w:0});a.g+=s.g||0;a.w+=s.w||0}));
+ const adm=NET.mode==='online'&&TITLES[NET.uid]==='제작자';
+ const rows=BOARD.slice(0,30).map((d,i)=>`<tr${d.id===NET.uid?' class="me"':''}><td><span class="rkn r${i+1}">${i+1}</span></td><td class="nmc"><span class="avslot" data-i="${i}"></span><span class="bn" data-i="${i}"></span>${adm&&d.id!==NET.uid?`<button type="button" class="rdel" data-i="${i}" aria-label="계정 삭제">🗑</button>`:''}</td><td>Lv.${lvOfP(d).lv}</td><td>${d.wins||0}</td><td>${rate(d.wins||0,d.games||0)}</td></tr>`).join('');
+ const agg={},OLDN={'양동우':'테스트1','김유성':'테스트2'};BOARD.forEach(d=>Object.entries(d.charStats||{}).forEach(([n,s])=>{n=OLDN[n]||n;const a=agg[n]||(agg[n]={g:0,w:0});a.g+=s.g||0;a.w+=s.w||0}));
  const cr=Object.entries(agg).sort((a,b)=>(b[1].w/b[1].g||0)-(a[1].w/a[1].g||0)).map(([n,s])=>`<tr><td>${esc(n)}</td><td>${s.g}</td><td>${rate(s.w,s.g)}</td><td><div class="wbar"><i style="width:${s.g?Math.round(s.w/s.g*100):0}%"></i></div></td></tr>`).join('')||'<tr><td colspan="4">아직 기록이 없어요</td></tr>';
  return `<h3>랭킹 <small>승리 순</small></h3><table class="tb rk"><tr><th>#</th><th>플레이어</th><th>레벨</th><th>승</th><th>승률</th></tr>${rows}</table>
   <h3>캐릭터 승률 <small>모든 플레이어 합계</small></h3><table class="tb"><tr><th>캐릭터</th><th>출전</th><th>승률</th><th></th></tr>${cr}</table>`;
@@ -3106,6 +3109,10 @@ function renderProf(){
   <div id="pbody">${pTab==='me'?statRows(PROF)+'<div class="bar"><button type="button" class="btn2" id="pedit">프로필 수정</button></div>':boardHTML()}</div>
   <div class="sub">${NET.mode==='online'?'기록이 온라인에 저장되고 있어요.':NET.mode==='readonly'?'이 링크로는 온라인 저장 권한이 없어서 이 기기에만 저장돼요.':'오프라인이라 기록이 이 기기에만 저장돼요.'}</div>`;
  fillNames(sh);
+ sh.querySelectorAll('.rdel').forEach(bt=>bt.onclick=async e=>{ e.stopPropagation(); const d=BOARD[+bt.dataset.i]; if(!d) return;
+  if(!confirm('"'+(d.nick||'이름 없음')+'" 계정을 랭킹에서 삭제할까요? 되돌릴 수 없어요.')) return;
+  bt.disabled=true; try{ await NET.db.doc('players/'+d.id).del(); try{ await NET.db.doc('titles/'+d.id).del(); }catch(er){} }
+  catch(er){ bt.disabled=false; alert('삭제하지 못했어요. Firebase 규칙을 새로 게시했는지 확인해 주세요.'); } });
  sh.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>{pTab=b.dataset.p;if(pTab==='rank')subBoard();renderProf()});
  $('pclose').onclick=closeProf; const pe=$('pedit'); if(pe) pe.onclick=()=>{pTab='edit';renderProf()};
  if(pTab==='rank') subBoard();
